@@ -1,0 +1,5 @@
+pynput
+cryptography
+pyperclip
+httpx
+pygetwindow
